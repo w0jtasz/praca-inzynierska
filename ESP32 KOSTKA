@@ -1,0 +1,155 @@
+#define ACCELE_RANGE 4
+#define GYROSC_RANGE 500
+
+#include <Wire.h>
+#include <WiFi.h>
+#include <WebServer.h>
+
+const int MPU_addr = 0x68;
+float AcX, AcY, AcZ, GyX, GyY, GyZ;
+String orientation;
+const char* ssid = "UPC1604447";
+const char* password = "rhu3ddvtfjQf";
+WebServer server(80);
+
+const int tranzystorPin = 15; // GPIO15
+unsigned long lastActionTime = 0;
+bool tranzystorActive = false;
+unsigned long tranzystorStartTime = 0;
+String currentOrientation = "";
+
+void setup() {
+    Serial.begin(115200);
+    Wire.begin();
+    pinMode(tranzystorPin, OUTPUT);
+    digitalWrite(tranzystorPin, LOW);
+    
+    Wire.beginTransmission(MPU_addr);
+    Wire.write(0x6B);
+    Wire.write(0);
+    Wire.endTransmission(true);
+    
+    Serial.println("MPU6050 inicjalizacja zakończona");
+    
+    WiFi.begin(ssid, password);
+    Serial.print("Łączenie z WiFi");
+    unsigned long wifiStart = millis();
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(500);
+        Serial.print(".");
+        if (millis() - wifiStart > 20000) {
+            Serial.println("\nNie udało się połączyć z WiFi");
+            return;
+        }
+    }
+    Serial.println("\nPołączono z WiFi");
+    Serial.print("Adres IP: ");
+    Serial.println(WiFi.localIP());
+    
+    server.on("/", HTTP_GET, handleRoot);
+    server.on("/data", HTTP_GET, handleDataRequest);
+    server.begin();
+}
+
+void loop() {
+    server.handleClient();
+    odczytajMPU6050();
+
+    String newOrientation = determineOrientation(AcX, AcY, AcZ);
+
+    if (newOrientation != currentOrientation) {
+        Serial.print("Nowa orientacja: ");
+        Serial.println(newOrientation);
+        currentOrientation = newOrientation;
+    }
+
+    handleTranzystor(currentOrientation);
+    delay(500);
+}
+
+void odczytajMPU6050() {
+    Wire.beginTransmission(MPU_addr);
+    Wire.write(0x3B);
+    Wire.endTransmission(false);
+    Wire.requestFrom(MPU_addr, 14, true);
+    
+    int16_t rawAcX = (Wire.read() << 8) | Wire.read();
+    int16_t rawAcY = (Wire.read() << 8) | Wire.read();
+    int16_t rawAcZ = (Wire.read() << 8) | Wire.read();
+    Wire.read(); Wire.read(); // Pominięcie temperatury
+    int16_t rawGyX = (Wire.read() << 8) | Wire.read();
+    int16_t rawGyY = (Wire.read() << 8) | Wire.read();
+    int16_t rawGyZ = (Wire.read() << 8) | Wire.read();
+
+    AcX = rawAcX / 32768.0 * ACCELE_RANGE;
+    AcY = rawAcY / 32768.0 * ACCELE_RANGE;
+    AcZ = rawAcZ / 32768.0 * ACCELE_RANGE;
+    GyX = rawGyX / 32768.0 * GYROSC_RANGE;
+    GyY = rawGyY / 32768.0 * GYROSC_RANGE;
+    GyZ = rawGyZ / 32768.0 * GYROSC_RANGE;
+
+    Serial.print("AcX: "); Serial.print(AcX);
+    Serial.print(" | AcY: "); Serial.print(AcY);
+    Serial.print(" | AcZ: "); Serial.println(AcZ);
+}
+
+String determineOrientation(float ax, float ay, float az) {
+    if (az < -0.9) return "Góra";
+    else if (az > 0.9) return "Dół";
+    else if (ax < -0.9) return "Bok III";
+    else if (ax > 0.9) return "Bok I";
+    else if (ay > 0.9) return "Bok II";
+    else if (ay < -0.9) return "Bok IV";
+    else return "Nieokreślone";
+}
+
+void handleTranzystor(String orientation) {
+    unsigned long currentTime = millis();
+
+    if (orientation == "Bok I") {
+        if (!tranzystorActive || (currentTime - tranzystorStartTime >= 12000)) {
+            Serial.println("Aktywacja tranzystora na 2 sekundy (Bok I)");
+            digitalWrite(tranzystorPin, HIGH);
+            delay(2000);
+            digitalWrite(tranzystorPin, LOW);
+            tranzystorStartTime = millis();
+            tranzystorActive = true;
+        }
+    } 
+    else if (orientation == "Bok II") {
+        if (!tranzystorActive || (currentTime - tranzystorStartTime >= 8000)) {
+            Serial.println("Aktywacja tranzystora na 3 sekundy (Bok II)");
+            digitalWrite(tranzystorPin, HIGH);
+            delay(3000);
+            digitalWrite(tranzystorPin, LOW);
+            tranzystorStartTime = millis();
+            tranzystorActive = true;
+        }
+    } 
+    else {
+        tranzystorActive = false;
+    }
+}
+
+void handleRoot() {
+    String html = "<!DOCTYPE html>"
+                  "<html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1.0'>"
+                  "<title>Położenie Kostki</title></head><body>"
+                  "<h2>Położenie Kostki:</h2><p id='Położenie Kostki'>Ładowanie...</p>"
+                  "<script>"
+                  "function updateOrientation() {"
+                  "fetch('/data').then(response => response.json()).then(data => {"
+                  "document.getElementById('orientation').innerText = data.orientation;"
+                  "});"
+                  "}"
+                  "setInterval(updateOrientation, 100);"
+                  "updateOrientation();"
+                  "</script>"
+                  "</body></html>";
+    server.send(200, "text/html", html);
+}
+
+void handleDataRequest() {
+    String jsonResponse = "{\"orientation\": \"" + currentOrientation + "\"}";
+    server.send(200, "application/json", jsonResponse);
+}
