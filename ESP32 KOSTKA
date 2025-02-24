@@ -8,8 +8,8 @@
 const int MPU_addr = 0x68;
 float AcX, AcY, AcZ, GyX, GyY, GyZ;
 String orientation;
-const char* ssid = "UPC1604447";
-const char* password = "rhu3ddvtfjQf";
+const char* ssid = "xx";
+const char* password = "xx";
 WebServer server(80);
 
 const int tranzystorPin = 15; // GPIO15
